@@ -251,6 +251,10 @@ function badgesFor(a) {
 
 function cardTitle(a) {
   const t = TYPES[a.type] || { label: a.type };
+  if (t.accessoire) {
+    if (a.accessoireType && a.accessoireType !== "Autre") return a.accessoireType;
+    return a.accessoireDetail || a.accessoireType || "Matériel taxi";
+  }
   if (a.accessoireType) return a.accessoireType;
   if (t.licence) return "Licence ADS" + (a.conventionne ? " conventionnée" : "");
   return a.vehiculeModele || (a.licenceSeule ? "Licence ADS seule" : t.label);
@@ -362,6 +366,7 @@ function viewDetail() {
   if (a.societeIncluse) add("Société incluse", "Oui (clé en main)");
   if (a.creditVendeur != null) add("Crédit vendeur", a.creditVendeur ? "Oui" : "Non");
   add("Type de matériel", esc(a.accessoireType));
+  add("Désignation", esc(a.accessoireDetail));
   add("État", esc(a.etat));
   if (a.annee) add("Année véhicule", esc(a.annee));
   if (a.kilometrage) add("Kilométrage", fmtEuro(a.kilometrage) + " km");
@@ -417,6 +422,9 @@ function viewPublier() {
   const cat = state.formCategorie;
   const ty = state.formType;
   const def = TYPES[ty];
+  const p = state.profil || {};
+  const optSel = (arr, sel) => arr.map((v) => `<option ${v === sel ? "selected" : ""}>${esc(v)}</option>`).join("");
+  const monNom = [p.prenom, p.nom].filter(Boolean).join(" ");
   const catBtns = [["OFFRE", "Je propose (offre)"], ["RECHERCHE", "Je cherche (recherche)"]].map(([c, lbl]) =>
     `<button type="button" class="btn btn-sm ${c === cat ? "btn-navy" : "btn-ghost"}" data-setcat="${c}">${esc(lbl)}</button>`).join("");
   const typeBtns = Object.entries(TYPES).filter(([k, t]) => t.categorie === cat).map(([k, t]) =>
@@ -431,11 +439,14 @@ function viewPublier() {
     <div class="field full" style="margin-top:10px"><label>2. Type d'annonce</label><div class="badges" style="gap:8px">${typeBtns}</div></div>
     <hr class="divider" />
     <form id="annonce-form" class="form-grid">
-      <div class="field"><label>Nom / Société *</label><input name="auteur" required /></div>
-      <div class="field"><label>Téléphone *</label><input name="telephone" required placeholder="06 12 34 56 78" /></div>
+      ${state.profil
+        ? `<div class="banner full" style="background:var(--green-bg);border-color:#bfe6cd;color:#176a39">✅ <div>Champs pré-remplis depuis ton profil — modifie si besoin.</div></div>`
+        : `<div class="banner full">ℹ️ <div>Astuce : remplis ton <b>profil</b> (onglet « Mon profil ») pour pré-remplir automatiquement ces champs.</div></div>`}
+      <div class="field"><label>Nom / Société *</label><input name="auteur" required value="${esc(monNom)}" /></div>
+      <div class="field"><label>Téléphone *</label><input name="telephone" required placeholder="06 12 34 56 78" value="${esc(p.telephone || "")}" /></div>
       <div class="field"><label>E-mail (optionnel)</label><input name="email" type="email" /></div>
       <div class="field full"><label>Mon numéro de téléphone</label><select name="telVisible"><option value="false">🔒 Masqué — je reçois des demandes de contact (recommandé)</option><option value="true">👁️ Visible — afficher mon numéro sur l'annonce</option></select><div class="hint">Masqué : ton numéro n'apparaît pas ; les intéressés te laissent leurs coordonnées et tu les rappelles.</div></div>
-      <div class="field"><label>Zone d'exercice *</label><select name="zone" required>${ZONES.map((z) => `<option>${esc(z)}</option>`).join("")}</select></div>
+      <div class="field"><label>Zone d'exercice *</label><select name="zone" required>${optSel(ZONES, p.zone)}</select></div>
       <div class="field"><label>Ville / base</label><input name="ville" /></div>
       ${def.vehicule ? `
       <div class="field"><label>Véhicule (marque / modèle)</label><input name="vehiculeModele" /></div>
@@ -459,11 +470,12 @@ function viewPublier() {
 
       ${def.accessoire ? `
       <div class="field"><label>Type de matériel</label><select name="accessoireType"><option value="">—</option>${ACCESSOIRES.map((c) => `<option>${esc(c)}</option>`).join("")}</select></div>
+      <div class="field full"><label>Précisez le matériel (marque / modèle, ou si « Autre » / hors liste)</label><input name="accessoireDetail" placeholder="ex. Lumineux LED G7, taximètre ATA, imprimante, plaque…" /></div>
       ${def.vente ? `<div class="field"><label>État</label><select name="etat"><option value="">—</option>${ETATS.map((c) => `<option>${esc(c)}</option>`).join("")}</select></div>` : ""}` : ""}
 
       ${def.vente ? `<div class="field"><label>Prix de vente (€)</label><input name="prix" type="number" min="0" /></div>` : ""}
 
-      ${(def.vehicule || def.tarif) ? `<div class="field"><label>Centrale / Radio</label><select name="centrale"><option value="">—</option>${CENTRALES.map((c) => `<option>${esc(c)}</option>`).join("")}</select></div>` : ""}
+      ${(def.vehicule || def.tarif) ? `<div class="field"><label>Centrale / Radio</label><select name="centrale"><option value="">—</option>${optSel(CENTRALES, p.centrale)}</select></div>` : ""}
       ${def.tarif ? `
       <div class="field"><label>Loyer / jour (€)</label><input name="tarifJour" type="number" min="0" /></div>
       <div class="field"><label>Loyer / semaine (€)</label><input name="tarifSemaine" type="number" min="0" /></div>
@@ -480,9 +492,9 @@ function viewPublier() {
       ${ty === "REMPLACEMENT" ? `
       <hr class="divider full" />
       <div class="field full"><label>Mon profil (pour rassurer le titulaire)</label></div>
-      <div class="field"><label>Mon expérience (années)</label><input name="experience" type="number" min="0" /></div>
-      <div class="field"><label>Affilié à une centrale</label><select name="centrale"><option value="">—</option>${CENTRALES.map((c) => `<option>${esc(c)}</option>`).join("")}</select></div>
-      <div class="field check-inline"><input type="checkbox" name="possedeTpe" /><label>Je possède un terminal CB (TPE)</label></div>` : ""}
+      <div class="field"><label>Mon expérience (années)</label><input name="experience" type="number" min="0" value="${esc(p.experience || "")}" /></div>
+      <div class="field"><label>Affilié à une centrale</label><select name="centrale"><option value="">—</option>${optSel(CENTRALES, p.centrale)}</select></div>
+      <div class="field check-inline"><input type="checkbox" name="possedeTpe" ${p.lectureCb ? "checked" : ""} /><label>Je possède un terminal CB (TPE)</label></div>` : ""}
       ${(def.vehicule || def.tarif) ? `
       <hr class="divider full" />
       <div class="field full"><label>Exigences sur le candidat</label></div>
@@ -700,6 +712,7 @@ async function onSubmitAnnonce(e) {
     creditVendeur: triBool("creditVendeur"),
     siteWeb: fd.get("siteWeb")?.trim() || undefined,
     accessoireType: fd.get("accessoireType") || undefined,
+    accessoireDetail: fd.get("accessoireDetail")?.trim() || undefined,
     etat: fd.get("etat") || undefined,
     annee: num("annee"), kilometrage: num("kilometrage"),
     conditions: conditions?.trim() || undefined,
