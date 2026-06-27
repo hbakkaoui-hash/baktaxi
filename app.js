@@ -16,6 +16,7 @@ let state = {
   loading: true,
   filtres: { categorie: "", type: "", zone: "", budgetMax: "", elec: false, tpmr: false, texte: "", tri: "recent" },
   detailId: null,
+  formCategorie: "OFFRE",
   formType: "LOCATION",
   revealed: new Set(), // ids des annonces dont on a affiché le numéro
   demandesRecues: [],  // [{annonce, demandes:[...]}] pour "Mon espace"
@@ -283,6 +284,8 @@ function cardHTML(a) {
       ${a.places ? `<span>🪑 <b>${a.places}</b> places</span>` : ""}
       ${a.carburant ? `<span>⛽ ${esc(a.carburant)}</span>` : ""}
       ${a.centrale ? `<span>📻 ${esc(a.centrale)}</span>` : ""}
+      ${a.experience ? `<span>🎯 ${esc(a.experience)} an(s)</span>` : ""}
+      ${a.possedeTpe ? `<span>💳 TPE</span>` : ""}
       <span>📅 ${esc(dispoLabel(a))}</span>
     </div>
     <div class="hint" style="font-size:11.5px">🕒 Publié ${esc(timeAgo(a.createdAt))}</div>
@@ -345,6 +348,8 @@ function viewDetail() {
   add("Carburant", esc(a.carburant));
   add("Équipement", [a.tpmr ? "Rampe TPMR" : "", a.tpe === "FOURNI" ? "TPE fourni" : a.tpe === "REQUIS" ? "TPE requis" : ""].filter(Boolean).join(" • "));
   add("Centrale", esc(a.centrale));
+  add("Expérience", a.experience ? a.experience + " an(s)" : "");
+  add("Terminal CB (TPE)", a.possedeTpe ? "Oui (en possède un)" : "");
   add("Disponibilité", esc(dispoLabel(a)));
   if (a.tarifJour) add("Loyer / jour", fmtEuro(a.tarifJour) + " €" + (a.htTtc ? " " + a.htTtc : ""));
   if (a.tarifSemaine) add("Loyer / semaine", fmtEuro(a.tarifSemaine) + " €");
@@ -409,9 +414,12 @@ function viewDetail() {
 }
 
 function viewPublier() {
+  const cat = state.formCategorie;
   const ty = state.formType;
   const def = TYPES[ty];
-  const typeBtns = Object.entries(TYPES).map(([k, t]) =>
+  const catBtns = [["OFFRE", "Je propose (offre)"], ["RECHERCHE", "Je cherche (recherche)"]].map(([c, lbl]) =>
+    `<button type="button" class="btn btn-sm ${c === cat ? "btn-navy" : "btn-ghost"}" data-setcat="${c}">${esc(lbl)}</button>`).join("");
+  const typeBtns = Object.entries(TYPES).filter(([k, t]) => t.categorie === cat).map(([k, t]) =>
     `<button type="button" class="btn btn-sm ${k === ty ? "btn-primary" : "btn-ghost"}" data-settype="${k}">${t.icon} ${esc(t.label)}</button>`).join("");
 
   return `
@@ -419,10 +427,10 @@ function viewPublier() {
   <div class="banner warn">⚠️ <div>Outil <b>strictement professionnel</b> : location, gérance, licence, remplacement, matériel. Les liens externes et contenus hors usage sont refusés automatiquement.</div></div>
   ${(def.licence || ty === "LOCATION" || ty === "LOCATION_GERANCE" || ty === "LICENCE_SEULE_OFFRE" || ty === "LICENCE_SEULE_RECHERCHE") ? `<div class="banner warn">⚖️ <div><b>Rappel légal :</b> ${DISCLAIMER_TAXI}</div></div>` : ""}
   <div class="panel">
-    <div class="field full"><label>Type d'annonce</label><div class="badges" style="gap:8px">${typeBtns}</div></div>
+    <div class="field full"><label>1. Je propose ou je cherche ?</label><div class="badges" style="gap:8px">${catBtns}</div></div>
+    <div class="field full" style="margin-top:10px"><label>2. Type d'annonce</label><div class="badges" style="gap:8px">${typeBtns}</div></div>
     <hr class="divider" />
     <form id="annonce-form" class="form-grid">
-      <div class="field"><label>Catégorie</label><input value="${def.categorie === "OFFRE" ? "OFFRE — je propose" : "RECHERCHE — je cherche"}" disabled /></div>
       <div class="field"><label>Nom / Société *</label><input name="auteur" required /></div>
       <div class="field"><label>Téléphone *</label><input name="telephone" required placeholder="06 12 34 56 78" /></div>
       <div class="field"><label>E-mail (optionnel)</label><input name="email" type="email" /></div>
@@ -469,6 +477,12 @@ function viewPublier() {
       <div class="field check-inline"><input type="checkbox" name="dispoImmediat" /><label>De suite</label></div>
       <div class="field check-inline"><input type="checkbox" name="longueDuree" /><label>Longue durée</label></div>
       <div class="field full"><label>Disponibilité (texte libre)</label><input name="dispoTexte" placeholder="ex. week-ends, jours de repos…" /></div>
+      ${ty === "REMPLACEMENT" ? `
+      <hr class="divider full" />
+      <div class="field full"><label>Mon profil (pour rassurer le titulaire)</label></div>
+      <div class="field"><label>Mon expérience (années)</label><input name="experience" type="number" min="0" /></div>
+      <div class="field"><label>Affilié à une centrale</label><select name="centrale"><option value="">—</option>${CENTRALES.map((c) => `<option>${esc(c)}</option>`).join("")}</select></div>
+      <div class="field check-inline"><input type="checkbox" name="possedeTpe" /><label>Je possède un terminal CB (TPE)</label></div>` : ""}
       ${(def.vehicule || def.tarif) ? `
       <hr class="divider full" />
       <div class="field full"><label>Exigences sur le candidat</label></div>
@@ -602,6 +616,12 @@ function bindViewEvents() {
   const reset = document.getElementById("f-reset");
   if (reset) reset.addEventListener("click", () => { state.filtres = { categorie: "", type: "", zone: "", budgetMax: "", elec: false, tpmr: false, texte: "", tri: "recent" }; render(); });
 
+  document.querySelectorAll("[data-setcat]").forEach((b) => b.addEventListener("click", () => {
+    state.formCategorie = b.dataset.setcat;
+    const first = Object.keys(TYPES).find((k) => TYPES[k].categorie === b.dataset.setcat);
+    if (first) state.formType = first;
+    render();
+  }));
   document.querySelectorAll("[data-settype]").forEach((b) => b.addEventListener("click", () => { state.formType = b.dataset.settype; render(); }));
   document.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => onDelete(b.dataset.del)));
   document.querySelectorAll("[data-reveal]").forEach((b) => b.addEventListener("click", () => { state.revealed.add(b.dataset.reveal); render(); }));
@@ -673,6 +693,7 @@ async function onSubmitAnnonce(e) {
     dispoImmediat: bool("dispoImmediat"), longueDuree: bool("longueDuree"),
     dispoTexte: fd.get("dispoTexte")?.trim() || undefined,
     expMin: num("expMin"), tpObligatoire: bool("tpObligatoire"), cbObligatoire: bool("cbObligatoire"),
+    experience: num("experience"), possedeTpe: bool("possedeTpe"),
     prix: num("prix"),
     conventionne: triBool("conventionne"),
     societeIncluse: bool("societeIncluse"),

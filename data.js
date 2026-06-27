@@ -32,7 +32,7 @@ const TYPES = {
 };
 
 const CARBURANTS = ["Diesel", "Hybride", "Électrique", "E85", "Essence"];
-const CENTRALES = ["G7", "Taxis Bleus", "Alpha Taxis", "Autre", "Aucune"];
+const CENTRALES = ["G7", "Alpha Taxis", "Autre", "Aucune"];
 const TP_OPTIONS = ["Oui", "Non", "En cours"];
 const ACCESSOIRES = ["Lumineux", "Taximètre", "Terminal CB (TPE)", "Imprimante", "Plaque / totem", "Compteur horokilométrique", "Autre"];
 const ETATS = ["Neuf", "Très bon état", "Bon état", "Correct", "Pour pièces"];
