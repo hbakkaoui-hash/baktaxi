@@ -21,6 +21,7 @@ let state = {
   revealed: new Set(), // ids des annonces dont on a affiché le numéro
   demandesRecues: [],  // [{annonce, demandes:[...]}] pour "Mon espace"
   demandeSent: new Set(), // ids d'annonces où j'ai déjà envoyé une demande
+  user: null,          // compte connecté (Supabase Auth) ou null (anonyme)
 };
 
 /* ---------- Utilitaires ---------- */
@@ -171,9 +172,67 @@ function loadLocal() {
   try { state.owners = JSON.parse(localStorage.getItem(LS_OWNERS)) || {}; } catch { state.owners = {}; }
   try { state.annonces = JSON.parse(localStorage.getItem(LS_CACHE)) || []; } catch { state.annonces = []; }
 }
-function saveProfil() { localStorage.setItem(LS_PROFIL, JSON.stringify(state.profil)); }
+function saveProfil() {
+  localStorage.setItem(LS_PROFIL, JSON.stringify(state.profil));
+  if (state.user && state.profil) {
+    const p = state.profil;
+    sb.from("profils").upsert({
+      user_id: state.user.id, prenom: p.prenom, nom: p.nom, licence_ads: p.licenceAds,
+      telephone: p.telephone, zone: p.zone, experience: p.experience, tp: p.tp,
+      lecture_cb: p.lectureCb, centrale: p.centrale, permis_type: p.permisType, updated_at: new Date().toISOString(),
+    }).then(({ error }) => { if (error) console.warn("profil cloud:", error.message); });
+  }
+}
 function saveOwners() { localStorage.setItem(LS_OWNERS, JSON.stringify(state.owners)); }
 function saveCache() { localStorage.setItem(LS_CACHE, JSON.stringify(state.annonces)); }
+
+/* ---------- Comptes (Supabase Auth) ---------- */
+async function loadProfilCloud() {
+  if (!state.user) return;
+  try {
+    const { data, error } = await sb.from("profils").select("*").eq("user_id", state.user.id).maybeSingle();
+    if (error) throw error;
+    if (data) {
+      state.profil = {
+        prenom: data.prenom, nom: data.nom, licenceAds: data.licence_ads, telephone: data.telephone,
+        zone: data.zone, experience: data.experience, tp: data.tp, lectureCb: data.lecture_cb,
+        centrale: data.centrale, permisType: data.permis_type,
+      };
+      localStorage.setItem(LS_PROFIL, JSON.stringify(state.profil));
+    } else if (state.profil) {
+      // 1re connexion : on pousse le profil local vers le cloud
+      saveProfil();
+    }
+  } catch (e) { console.warn("profil cloud:", e.message); }
+}
+
+async function onSubmitAuth(e) {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const mode = e.submitter && e.submitter.dataset.mode;
+  const email = fd.get("email")?.trim();
+  const password = fd.get("password");
+  const errEl = document.getElementById("auth-error");
+  if (errEl) errEl.textContent = "";
+  if (!email || !password || password.length < 6) { if (errEl) errEl.textContent = "E-mail + mot de passe (6 caractères min)."; return; }
+  try {
+    const res = mode === "signup"
+      ? await sb.auth.signUp({ email, password })
+      : await sb.auth.signInWithPassword({ email, password });
+    if (res.error) throw res.error;
+    if (mode === "signup" && !res.data.session) {
+      toast("Compte créé — vérifie tes e-mails pour confirmer.", "ok");
+    } else {
+      toast(mode === "signup" ? "Compte créé ✓" : "Connecté ✓", "ok");
+    }
+  } catch (err) {
+    if (errEl) errEl.textContent = "Échec : " + (err.message || "réessaie");
+  }
+}
+async function onLogout() {
+  await sb.auth.signOut();
+  toast("Déconnecté", "ok");
+}
 
 async function fetchAnnonces() {
   try {
@@ -245,7 +304,7 @@ function badgesFor(a) {
   if (a.tpmr) out.push(`<span class="badge badge-tpmr">TPMR</span>`);
   if (a.carburant === "Électrique") out.push(`<span class="badge badge-elec">Électrique</span>`);
   if (isExpired(a)) out.push(`<span class="badge badge-expire">Expirée</span>`);
-  if (state.owners[a.id]) out.push(`<span class="badge badge-match">Mon annonce</span>`);
+  if (state.owners[a.id] || (state.user && a.userId === state.user.id)) out.push(`<span class="badge badge-match">Mon annonce</span>`);
   return out.join("");
 }
 
@@ -511,7 +570,7 @@ function viewPublier() {
 }
 
 function viewEspace() {
-  const mine = state.annonces.filter((a) => state.owners[a.id]);
+  const mine = state.annonces.filter((a) => state.owners[a.id] || (state.user && a.userId === state.user.id));
   const all = state.annonces.filter((a) => a.statut !== "ARCHIVED" && !isExpired(a));
   const offres = all.filter((a) => TYPES[a.type] && TYPES[a.type].categorie === "OFFRE").length;
   const rech = all.length - offres;
@@ -561,8 +620,29 @@ function demandesBlock() {
 function viewProfil() {
   const p = state.profil || {};
   const v = (k, d = "") => (p[k] != null ? p[k] : d);
+  const compte = state.user
+    ? `<div class="panel" style="margin-bottom:16px">
+         <h2>✅ Connecté</h2>
+         <p class="card-sub" style="margin-bottom:6px">${esc(state.user.email)}</p>
+         <p class="hint" style="margin-bottom:12px">Tes annonces, demandes reçues et ton profil sont synchronisés sur <b>tous tes appareils</b>.</p>
+         <button class="btn btn-ghost btn-sm" id="logout-btn">Se déconnecter</button>
+       </div>`
+    : `<div class="panel" style="margin-bottom:16px">
+         <h2>🔑 Compte <span class="hint" style="font-weight:400">(optionnel)</span></h2>
+         <p class="hint" style="margin-bottom:12px">Sans compte, tout fonctionne. Un compte t'apporte : tes annonces & demandes sur <b>tous tes appareils</b>, profil synchronisé, et bientôt le badge <b>« ADS vérifié »</b> + les avis.</p>
+         <form id="auth-form" class="form-grid">
+           <div class="field"><label>E-mail</label><input name="email" type="email" required autocomplete="email" /></div>
+           <div class="field"><label>Mot de passe (6+ caractères)</label><input name="password" type="password" minlength="6" required autocomplete="current-password" /></div>
+           <div class="full error-text" id="auth-error"></div>
+           <div class="form-actions full">
+             <button type="submit" class="btn btn-primary" data-mode="login">Se connecter</button>
+             <button type="submit" class="btn btn-ghost" data-mode="signup">Créer un compte</button>
+           </div>
+         </form>
+       </div>`;
   return `
-  <div class="section-head"><div><h1>Mon profil</h1><p class="subtitle">Profil = annonces mieux ciblées (il reste privé sur ton téléphone).</p></div></div>
+  <div class="section-head"><div><h1>Mon profil</h1><p class="subtitle">Un compte (optionnel) synchronise ton profil et tes annonces partout.</p></div></div>
+  ${compte}
   <div class="panel">
     <form id="profil-form" class="form-grid">
       <div class="field"><label>Prénom *</label><input name="prenom" required value="${esc(v("prenom"))}" /></div>
@@ -644,6 +724,10 @@ function bindViewEvents() {
   if (af) af.addEventListener("submit", onSubmitAnnonce);
   const pf = document.getElementById("profil-form");
   if (pf) pf.addEventListener("submit", onSubmitProfil);
+  const authf = document.getElementById("auth-form");
+  if (authf) authf.addEventListener("submit", onSubmitAuth);
+  const logoutBtn = document.getElementById("logout-btn");
+  if (logoutBtn) logoutBtn.addEventListener("click", onLogout);
 }
 
 function renderListOnly() {
@@ -716,6 +800,7 @@ async function onSubmitAnnonce(e) {
     etat: fd.get("etat") || undefined,
     annee: num("annee"), kilometrage: num("kilometrage"),
     conditions: conditions?.trim() || undefined,
+    userId: state.user ? state.user.id : undefined, // liée au compte si connecté
   };
   if (!data.auteur || !phone) { errEl.textContent = "Nom et téléphone sont obligatoires."; return; }
 
@@ -724,10 +809,14 @@ async function onSubmitAnnonce(e) {
     const { data: rows, error } = await sb.from("annonces").insert(toDb(data)).select();
     if (error) throw error;
     const created = fromDb(rows[0]);
-    // jeton propriétaire stocké dans une table à lecture interdite (jamais exposé via l'API)
-    const { error: e2 } = await sb.from("annonce_secrets").insert({ annonce_id: created.id, owner_token: token });
-    if (e2) console.warn("annonce_secrets:", e2.message);
-    state.owners[created.id] = token; saveOwners();
+    if (state.user) {
+      // Annonce liée au compte : gérée par le compte (multi-appareils), pas de jeton local
+    } else {
+      // Anonyme : jeton propriétaire dans une table à lecture interdite (jamais exposé)
+      const { error: e2 } = await sb.from("annonce_secrets").insert({ annonce_id: created.id, owner_token: token });
+      if (e2) console.warn("annonce_secrets:", e2.message);
+      state.owners[created.id] = token; saveOwners();
+    }
     if (!state.annonces.find((x) => x.id === created.id)) state.annonces.unshift(created);
     saveCache();
     toast("Annonce publiée ✓ — visible par tous", "ok");
@@ -741,13 +830,18 @@ async function onSubmitAnnonce(e) {
 
 async function onDelete(id) {
   if (!confirm("Supprimer cette annonce ?")) return;
+  const ann = state.annonces.find((a) => a.id === id);
   const token = state.owners[id];
-  if (!token) { toast("Tu ne peux supprimer que tes propres annonces", "err"); return; }
+  const isAccount = state.user && ann && ann.userId === state.user.id;
+  if (!token && !isAccount) { toast("Tu ne peux supprimer que tes propres annonces", "err"); return; }
   try {
-    const { error } = await sb.rpc("delete_own_annonce", { p_id: id, p_token: token });
+    const { error } = isAccount
+      ? await sb.from("annonces").delete().eq("id", id)
+      : await sb.rpc("delete_own_annonce", { p_id: id, p_token: token });
     if (error) throw error;
     state.annonces = state.annonces.filter((a) => a.id !== id);
-    delete state.owners[id]; saveOwners(); saveCache();
+    if (token) { delete state.owners[id]; saveOwners(); }
+    saveCache();
     toast("Annonce supprimée", "ok");
     render();
   } catch (err) {
@@ -781,13 +875,26 @@ async function onSubmitDemande(e) {
 }
 
 async function loadDemandes() {
-  const mine = state.annonces.filter((a) => state.owners[a.id]);
   const out = [];
-  for (const a of mine) {
+  // Annonces anonymes (jeton local) → via RPC
+  for (const a of state.annonces.filter((a) => state.owners[a.id])) {
     try {
       const { data, error } = await sb.rpc("get_demandes_for_annonce", { p_annonce_id: a.id, p_token: state.owners[a.id] });
       if (!error && data && data.length) out.push({ annonce: a, demandes: data });
     } catch (e) { /* ignore */ }
+  }
+  // Annonces liées au compte → lecture directe (RLS), sur tous les appareils
+  if (state.user) {
+    const mesAnnonces = state.annonces.filter((a) => a.userId === state.user.id);
+    const ids = mesAnnonces.map((a) => a.id);
+    if (ids.length) {
+      try {
+        const { data } = await sb.from("demandes").select("*").in("annonce_id", ids).order("created_at", { ascending: false });
+        const parAnnonce = {};
+        (data || []).forEach((d) => { (parAnnonce[d.annonce_id] = parAnnonce[d.annonce_id] || []).push(d); });
+        mesAnnonces.forEach((a) => { if (parAnnonce[a.id]) out.push({ annonce: a, demandes: parAnnonce[a.id] }); });
+      } catch (e) { /* ignore */ }
+    }
   }
   state.demandesRecues = out;
   if (state.view === "espace") render();
@@ -821,6 +928,18 @@ document.querySelectorAll(".nav-btn").forEach((b) => b.addEventListener("click",
 
 (async function init() {
   loadLocal();
+  // Session compte (si déjà connecté)
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    state.user = session?.user || null;
+    if (state.user) await loadProfilCloud();
+  } catch (e) { /* ignore */ }
+  // Réagir aux connexions / déconnexions
+  sb.auth.onAuthStateChange(async (event, session) => {
+    state.user = session?.user || null;
+    if (state.user) await loadProfilCloud();
+    render();
+  });
   setView("annonces");      // affiche tout de suite (cache éventuel)
   await fetchAnnonces();    // récupère les annonces partagées
   if (state.view === "annonces") render();
