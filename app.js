@@ -22,6 +22,7 @@ let state = {
   demandesRecues: [],  // [{annonce, demandes:[...]}] pour "Mon espace"
   demandeSent: new Set(), // ids d'annonces où j'ai déjà envoyé une demande
   user: null,          // compte connecté (Supabase Auth) ou null (anonyme)
+  recovery: false,     // en cours de réinitialisation de mot de passe
 };
 
 /* ---------- Utilitaires ---------- */
@@ -232,6 +233,32 @@ async function onSubmitAuth(e) {
 async function onLogout() {
   await sb.auth.signOut();
   toast("Déconnecté", "ok");
+}
+async function onResetPassword() {
+  const email = document.querySelector('#auth-form [name=email]')?.value?.trim();
+  const errEl = document.getElementById("auth-error");
+  if (errEl) errEl.textContent = "";
+  if (!email) { if (errEl) errEl.textContent = "Écris d'abord ton e-mail dans le champ ci-dessus, puis reclique."; return; }
+  try {
+    const redirectTo = location.origin + location.pathname; // retour sur BakTaxi
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo });
+    if (error) throw error;
+    toast("E-mail de réinitialisation envoyé ✓ — regarde ta boîte (et les spams).", "ok");
+  } catch (err) { if (errEl) errEl.textContent = "Échec : " + (err.message || "réessaie"); }
+}
+async function onSetNewPassword(e) {
+  e.preventDefault();
+  const pwd = e.target.querySelector('[name=newpassword]')?.value;
+  const errEl = document.getElementById("newpwd-error");
+  if (errEl) errEl.textContent = "";
+  if (!pwd || pwd.length < 6) { if (errEl) errEl.textContent = "6 caractères minimum."; return; }
+  try {
+    const { error } = await sb.auth.updateUser({ password: pwd });
+    if (error) throw error;
+    state.recovery = false;
+    toast("Mot de passe mis à jour ✓ — tu es connecté.", "ok");
+    setView("annonces");
+  } catch (err) { if (errEl) errEl.textContent = "Échec : " + (err.message || "réessaie"); }
 }
 
 async function fetchAnnonces() {
@@ -620,7 +647,17 @@ function demandesBlock() {
 function viewProfil() {
   const p = state.profil || {};
   const v = (k, d = "") => (p[k] != null ? p[k] : d);
-  const compte = state.user
+  const compte = state.recovery
+    ? `<div class="panel" style="margin-bottom:16px">
+         <h2>🔑 Nouveau mot de passe</h2>
+         <p class="hint" style="margin-bottom:10px">Choisis un nouveau mot de passe pour ton compte.</p>
+         <form id="newpwd-form" class="form-grid">
+           <div class="field full"><label>Nouveau mot de passe (6+ caractères)</label><input name="newpassword" type="password" minlength="6" required autocomplete="new-password" /></div>
+           <div class="full error-text" id="newpwd-error"></div>
+           <div class="form-actions full"><button type="submit" class="btn btn-primary">Enregistrer le mot de passe</button></div>
+         </form>
+       </div>`
+    : state.user
     ? `<div class="panel" style="margin-bottom:16px">
          <h2>✅ Connecté</h2>
          <p class="card-sub" style="margin-bottom:6px">${esc(state.user.email)}</p>
@@ -638,6 +675,7 @@ function viewProfil() {
              <button type="submit" class="btn btn-primary" data-mode="login">Se connecter</button>
              <button type="submit" class="btn btn-ghost" data-mode="signup">Créer un compte</button>
            </div>
+           <div class="full"><button type="button" class="btn btn-ghost btn-sm" id="reset-btn" style="padding-left:0">Mot de passe oublié ?</button></div>
          </form>
        </div>`;
   return `
@@ -728,6 +766,10 @@ function bindViewEvents() {
   if (authf) authf.addEventListener("submit", onSubmitAuth);
   const logoutBtn = document.getElementById("logout-btn");
   if (logoutBtn) logoutBtn.addEventListener("click", onLogout);
+  const resetBtn = document.getElementById("reset-btn");
+  if (resetBtn) resetBtn.addEventListener("click", onResetPassword);
+  const newpwdForm = document.getElementById("newpwd-form");
+  if (newpwdForm) newpwdForm.addEventListener("submit", onSetNewPassword);
 }
 
 function renderListOnly() {
@@ -937,6 +979,7 @@ document.querySelectorAll(".nav-btn").forEach((b) => b.addEventListener("click",
   // Réagir aux connexions / déconnexions
   sb.auth.onAuthStateChange(async (event, session) => {
     state.user = session?.user || null;
+    if (event === "PASSWORD_RECOVERY") { state.recovery = true; setView("profil"); return; }
     if (state.user) await loadProfilCloud();
     render();
   });
