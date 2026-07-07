@@ -197,7 +197,7 @@ async function loadProfilCloud() {
       state.profil = {
         prenom: data.prenom, nom: data.nom, licenceAds: data.licence_ads, telephone: data.telephone,
         zone: data.zone, experience: data.experience, tp: data.tp, lectureCb: data.lecture_cb,
-        centrale: data.centrale, permisType: data.permis_type,
+        centrale: data.centrale, permisType: data.permis_type, verifie: data.verifie,
       };
       localStorage.setItem(LS_PROFIL, JSON.stringify(state.profil));
     } else if (state.profil) {
@@ -259,6 +259,29 @@ async function onSetNewPassword(e) {
     toast("Mot de passe mis à jour ✓ — tu es connecté.", "ok");
     setView("annonces");
   } catch (err) { if (errEl) errEl.textContent = "Échec : " + (err.message || "réessaie"); }
+}
+async function onUploadLicence() {
+  if (!state.user) return;
+  const input = document.getElementById("licence-file");
+  const statusEl = document.getElementById("licence-status");
+  const file = input && input.files && input.files[0];
+  if (!file) { if (statusEl) statusEl.textContent = "Choisis d'abord un fichier."; return; }
+  if (file.size > 5 * 1024 * 1024) { if (statusEl) statusEl.textContent = "Fichier trop lourd (5 Mo max)."; return; }
+  const btn = document.getElementById("licence-send");
+  if (btn) { btn.disabled = true; btn.textContent = "Envoi…"; }
+  try {
+    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+    const path = `${state.user.id}/licence-${Date.now()}.${ext}`;
+    const { error } = await sb.storage.from("documents").upload(path, file, { upsert: true, contentType: file.type });
+    if (error) throw error;
+    if (statusEl) statusEl.textContent = "✅ Document envoyé — en attente de validation (24-48 h).";
+    toast("Licence envoyée ✓", "ok");
+    if (btn) btn.textContent = "Renvoyer";
+  } catch (err) {
+    if (statusEl) statusEl.textContent = "Échec : " + (err.message || "réseau");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function fetchAnnonces() {
@@ -327,6 +350,7 @@ function badgesFor(a) {
   const t = TYPES[a.type];
   const out = [];
   if (t) out.push(`<span class="badge ${t.categorie === "OFFRE" ? "badge-offre" : "badge-recherche"}">${t.categorie}</span>`);
+  if (a.auteurVerifie) out.push(`<span class="badge badge-verifie">✅ ADS vérifié</span>`);
   if (isUrgent(a)) out.push(`<span class="badge badge-urgent">Urgent</span>`);
   if (a.tpmr) out.push(`<span class="badge badge-tpmr">TPMR</span>`);
   if (a.carburant === "Électrique") out.push(`<span class="badge badge-elec">Électrique</span>`);
@@ -662,6 +686,16 @@ function viewProfil() {
          <h2>✅ Connecté</h2>
          <p class="card-sub" style="margin-bottom:6px">${esc(state.user.email)}</p>
          <p class="hint" style="margin-bottom:12px">Tes annonces, demandes reçues et ton profil sont synchronisés sur <b>tous tes appareils</b>.</p>
+         <hr class="divider" />
+         <h3 style="margin-bottom:6px">🪪 Vérification ADS</h3>
+         ${state.profil && state.profil.verifie
+           ? `<span class="badge badge-verifie" style="display:inline-block">✅ Licence ADS vérifiée</span>
+              <p class="hint" style="margin-top:8px">Toutes tes annonces portent le badge « ADS vérifié ».</p>`
+           : `<p class="hint" style="margin-bottom:8px">Envoie une photo de ta licence ADS pour obtenir le badge <b>« ADS vérifié »</b> (validation manuelle, sous 24-48 h).</p>
+              <input type="file" id="licence-file" accept="image/*,.pdf" style="margin-bottom:8px;max-width:100%" />
+              <div><button class="btn btn-primary btn-sm" id="licence-send">📤 Envoyer ma licence</button></div>
+              <div class="hint" id="licence-status" style="margin-top:8px"></div>`}
+         <hr class="divider" />
          <button class="btn btn-ghost btn-sm" id="logout-btn">Se déconnecter</button>
        </div>`
     : `<div class="panel" style="margin-bottom:16px">
@@ -770,6 +804,8 @@ function bindViewEvents() {
   if (resetBtn) resetBtn.addEventListener("click", onResetPassword);
   const newpwdForm = document.getElementById("newpwd-form");
   if (newpwdForm) newpwdForm.addEventListener("submit", onSetNewPassword);
+  const licenceSend = document.getElementById("licence-send");
+  if (licenceSend) licenceSend.addEventListener("click", onUploadLicence);
 }
 
 function renderListOnly() {
@@ -843,6 +879,7 @@ async function onSubmitAnnonce(e) {
     annee: num("annee"), kilometrage: num("kilometrage"),
     conditions: conditions?.trim() || undefined,
     userId: state.user ? state.user.id : undefined, // liée au compte si connecté
+    auteurVerifie: state.user && state.profil && state.profil.verifie ? true : undefined,
   };
   if (!data.auteur || !phone) { errEl.textContent = "Nom et téléphone sont obligatoires."; return; }
 
