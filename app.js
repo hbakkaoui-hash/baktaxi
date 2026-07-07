@@ -23,6 +23,8 @@ let state = {
   demandeSent: new Set(), // ids d'annonces où j'ai déjà envoyé une demande
   user: null,          // compte connecté (Supabase Auth) ou null (anonyme)
   recovery: false,     // en cours de réinitialisation de mot de passe
+  isAdmin: false,      // le compte connecté est administrateur
+  adminQueue: [],      // file de vérification (modération)
 };
 
 /* ---------- Utilitaires ---------- */
@@ -260,6 +262,45 @@ async function onSetNewPassword(e) {
     setView("annonces");
   } catch (err) { if (errEl) errEl.textContent = "Échec : " + (err.message || "réessaie"); }
 }
+async function checkAdmin() {
+  state.isAdmin = false;
+  if (!state.user) return;
+  try {
+    const { data } = await sb.from("admins").select("user_id").eq("user_id", state.user.id).maybeSingle();
+    state.isAdmin = !!data;
+  } catch (e) { /* ignore */ }
+}
+async function loadAdminQueue() {
+  if (!state.isAdmin) { state.adminQueue = []; return; }
+  const items = [];
+  try {
+    const { data: folders } = await sb.storage.from("documents").list("", { limit: 200 });
+    for (const f of folders || []) {
+      const uid = f.name;
+      if (!uid) continue;
+      const { data: files } = await sb.storage.from("documents").list(uid, { limit: 20, sortBy: { column: "created_at", order: "desc" } });
+      const file = (files || []).find((x) => x.name);
+      if (!file) continue;
+      const path = `${uid}/${file.name}`;
+      const { data: signed } = await sb.storage.from("documents").createSignedUrl(path, 600);
+      const { data: prof } = await sb.from("profils").select("prenom,nom,telephone,zone,licence_ads,verifie").eq("user_id", uid).maybeSingle();
+      items.push({ uid, url: signed && signed.signedUrl, name: file.name, prof: prof || {} });
+    }
+  } catch (e) { console.warn("admin queue:", e.message); }
+  // à valider d'abord
+  items.sort((a, b) => (a.prof.verifie === b.prof.verifie ? 0 : a.prof.verifie ? 1 : -1));
+  state.adminQueue = items;
+  if (state.view === "admin") render();
+}
+async function onAdminVerif(uid, valeur) {
+  try {
+    const { error } = await sb.rpc("admin_set_verifie", { p_user_id: uid, p_verifie: valeur });
+    if (error) throw error;
+    toast(valeur ? "Chauffeur vérifié ✓" : "Vérification retirée", "ok");
+    await loadAdminQueue();
+  } catch (e) { toast("Échec : " + (e.message || "réseau"), "err"); }
+}
+
 async function onUploadLicence() {
   if (!state.user) return;
   const input = document.getElementById("licence-file");
@@ -330,6 +371,7 @@ function setView(v) {
   render();
   window.scrollTo(0, 0);
   if (v === "espace") loadDemandes();
+  if (v === "admin") loadAdminQueue();
 }
 
 function render() {
@@ -339,6 +381,7 @@ function render() {
   else if (state.view === "espace") el.innerHTML = viewEspace();
   else if (state.view === "profil") el.innerHTML = viewProfil();
   else if (state.view === "detail") el.innerHTML = viewDetail();
+  else if (state.view === "admin") el.innerHTML = viewAdmin();
   else if (state.view === "aide") el.innerHTML = viewLegal("Comment ça marche ?", aideHTML());
   else if (state.view === "mentions") el.innerHTML = viewLegal("Mentions légales", legalMentions());
   else if (state.view === "confidentialite") el.innerHTML = viewLegal("Politique de confidentialité", legalConfidentialite());
@@ -639,7 +682,7 @@ function viewEspace() {
     : `<div class="empty">Tu n'as pas encore publié d'annonce. <br/><button class="btn btn-primary btn-sm" data-go="publier" style="margin-top:10px">Publier une annonce</button></div>`;
 
   return `
-  <div class="section-head"><div><h1>Mon espace</h1><p class="subtitle">Tes annonces et l'activité du réseau.</p></div></div>
+  <div class="section-head"><div><h1>Mon espace</h1><p class="subtitle">Tes annonces et l'activité du réseau.</p></div>${state.isAdmin ? `<button class="btn btn-navy" data-go="admin">🛡️ Modération</button>` : ""}</div>
   <div class="stats">
     <div class="stat"><div class="n">${all.length}</div><div class="l">Annonces partagées</div></div>
     <div class="stat"><div class="n">${offres}</div><div class="l">Offres</div></div>
@@ -754,6 +797,30 @@ function aideHTML() {
   <p>Menu de ton navigateur → <b>« Ajouter à l'écran d'accueil »</b> : tu auras l'icône BakTaxi, en plein écran.</p>`;
 }
 
+function viewAdmin() {
+  if (!state.isAdmin) return `<button class="back-link" data-go="annonces">← Retour</button><div class="empty">Accès réservé à l'administrateur.</div>`;
+  const q = state.adminQueue || [];
+  const aVerifier = q.filter((x) => !x.prof.verifie).length;
+  const cards = q.map((it) => `
+    <div class="panel" style="margin-bottom:12px">
+      <div class="card-top" style="margin-bottom:6px">
+        <span style="font-weight:800">${esc([it.prof.prenom, it.prof.nom].filter(Boolean).join(" ") || "Chauffeur")}</span>
+        ${it.prof.verifie ? `<span class="badge badge-verifie">✅ Vérifié</span>` : `<span class="badge badge-recherche">En attente</span>`}
+      </div>
+      <div class="card-sub">${esc(it.prof.zone || "")}${it.prof.telephone ? " · " + esc(it.prof.telephone) : ""}${it.prof.licence_ads ? " · ADS " + esc(it.prof.licence_ads) : ""}</div>
+      ${it.url ? `<a href="${it.url}" target="_blank" rel="noopener"><img src="${it.url}" alt="licence" style="max-width:100%;max-height:320px;border-radius:8px;margin:10px 0;border:1px solid var(--line)"/></a>` : `<p class="hint">Document illisible</p>`}
+      <div class="form-actions">
+        ${it.prof.verifie
+          ? `<button class="btn btn-danger btn-sm" data-verif="0" data-uid="${it.uid}">Retirer la vérification</button>`
+          : `<button class="btn btn-primary btn-sm" data-verif="1" data-uid="${it.uid}">✅ Valider la licence</button>`}
+      </div>
+    </div>`).join("");
+  return `
+  <button class="back-link" data-go="annonces">← Retour aux annonces</button>
+  <div class="section-head"><div><h1>🛡️ Modération — vérification ADS</h1><p class="subtitle">${aVerifier} licence(s) en attente · ${q.length} au total.</p></div></div>
+  ${q.length ? cards : `<div class="empty">Aucune licence envoyée pour l'instant.</div>`}`;
+}
+
 function viewLegal(title, body) {
   return `
   <button class="back-link" data-go="annonces">← Retour aux annonces</button>
@@ -806,6 +873,7 @@ function bindViewEvents() {
   if (newpwdForm) newpwdForm.addEventListener("submit", onSetNewPassword);
   const licenceSend = document.getElementById("licence-send");
   if (licenceSend) licenceSend.addEventListener("click", onUploadLicence);
+  document.querySelectorAll("[data-verif]").forEach((b) => b.addEventListener("click", () => onAdminVerif(b.dataset.uid, b.dataset.verif === "1")));
 }
 
 function renderListOnly() {
@@ -1011,13 +1079,13 @@ document.querySelectorAll(".nav-btn").forEach((b) => b.addEventListener("click",
   try {
     const { data: { session } } = await sb.auth.getSession();
     state.user = session?.user || null;
-    if (state.user) await loadProfilCloud();
+    if (state.user) { await loadProfilCloud(); await checkAdmin(); }
   } catch (e) { /* ignore */ }
   // Réagir aux connexions / déconnexions
   sb.auth.onAuthStateChange(async (event, session) => {
     state.user = session?.user || null;
     if (event === "PASSWORD_RECOVERY") { state.recovery = true; setView("profil"); return; }
-    if (state.user) await loadProfilCloud();
+    if (state.user) { await loadProfilCloud(); await checkAdmin(); } else { state.isAdmin = false; }
     render();
   });
   setView("annonces");      // affiche tout de suite (cache éventuel)
