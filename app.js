@@ -752,7 +752,7 @@ function viewProfil() {
              <button type="submit" class="btn btn-primary" data-mode="login">Se connecter</button>
              <button type="submit" class="btn btn-ghost" data-mode="signup">Créer un compte</button>
            </div>
-           <div class="full"><button type="button" class="btn btn-ghost btn-sm" id="reset-btn" style="padding-left:0">Mot de passe oublié ?</button></div>
+           <div class="full"><p class="hint">Mot de passe oublié ? Contacte-nous à <a href="mailto:${esc(EDITEUR.email)}">${esc(EDITEUR.email)}</a> pour réinitialiser ton compte.</p></div>
          </form>
        </div>`;
   return `
