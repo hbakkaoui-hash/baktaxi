@@ -236,18 +236,8 @@ async function onLogout() {
   await sb.auth.signOut();
   toast("Déconnecté", "ok");
 }
-async function onResetPassword() {
-  const email = document.querySelector('#auth-form [name=email]')?.value?.trim();
-  const errEl = document.getElementById("auth-error");
-  if (errEl) errEl.textContent = "";
-  if (!email) { if (errEl) errEl.textContent = "Écris d'abord ton e-mail dans le champ ci-dessus, puis reclique."; return; }
-  try {
-    const redirectTo = location.origin + location.pathname; // retour sur BakTaxi
-    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo });
-    if (error) throw error;
-    toast("E-mail de réinitialisation envoyé ✓ — regarde ta boîte (et les spams).", "ok");
-  } catch (err) { if (errEl) errEl.textContent = "Échec : " + (err.message || "réessaie"); }
-}
+// Réinitialisation par e-mail DÉSACTIVÉE (aucun envoi d'e-mail depuis l'app).
+// En cas d'oubli de mot de passe, l'utilisateur nous contacte et l'admin réinitialise le compte.
 async function onSetNewPassword(e) {
   e.preventDefault();
   const pwd = e.target.querySelector('[name=newpassword]')?.value;
@@ -867,8 +857,6 @@ function bindViewEvents() {
   if (authf) authf.addEventListener("submit", onSubmitAuth);
   const logoutBtn = document.getElementById("logout-btn");
   if (logoutBtn) logoutBtn.addEventListener("click", onLogout);
-  const resetBtn = document.getElementById("reset-btn");
-  if (resetBtn) resetBtn.addEventListener("click", onResetPassword);
   const newpwdForm = document.getElementById("newpwd-form");
   if (newpwdForm) newpwdForm.addEventListener("submit", onSetNewPassword);
   const licenceSend = document.getElementById("licence-send");
