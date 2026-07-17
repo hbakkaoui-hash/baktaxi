@@ -25,6 +25,7 @@ let state = {
   recovery: false,     // en cours de réinitialisation de mot de passe
   isAdmin: false,      // le compte connecté est administrateur
   adminQueue: [],      // file de vérification (modération)
+  formPhotos: [],      // photos compressées en attente de publication [{blob, url}]
 };
 
 /* ---------- Utilitaires ---------- */
@@ -315,6 +316,73 @@ async function onUploadLicence() {
   }
 }
 
+/* ---------- Photos d'annonce ---------- */
+const PHOTO_MAX = 3;
+// Compression avant envoi : indispensable pour tenir dans l'offre gratuite (1 Go)
+async function compressImage(file, maxDim = 1000, quality = 0.72) {
+  let src;
+  try {
+    src = await createImageBitmap(file, { imageOrientation: "from-image" });
+  } catch (_) {
+    src = await new Promise((res, rej) => {
+      const img = new Image();
+      img.onload = () => res(img);
+      img.onerror = rej;
+      img.src = URL.createObjectURL(file);
+    });
+  }
+  const scale = Math.min(1, maxDim / Math.max(src.width, src.height));
+  const w = Math.round(src.width * scale), h = Math.round(src.height * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  canvas.getContext("2d").drawImage(src, 0, 0, w, h);
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", quality));
+  if (src.close) src.close();
+  if (!blob) throw new Error("compression");
+  return blob;
+}
+function renderPhotoPreview() {
+  const el = document.getElementById("photo-preview");
+  if (!el) return;
+  el.innerHTML = state.formPhotos.map((p, i) =>
+    `<div class="photo-thumb"><img src="${p.url}" alt="" /><button type="button" class="photo-del" data-photo-del="${i}" aria-label="Retirer la photo">✕</button></div>`
+  ).join("");
+}
+async function onPickPhotos(e) {
+  const files = Array.from(e.target.files || []);
+  e.target.value = "";
+  for (const f of files) {
+    if (state.formPhotos.length >= PHOTO_MAX) { toast(`${PHOTO_MAX} photos maximum`, "err"); break; }
+    if (!/^image\//.test(f.type)) { toast("Fichier ignoré (pas une image)", "err"); continue; }
+    try {
+      const blob = await compressImage(f);
+      state.formPhotos.push({ blob, url: URL.createObjectURL(blob) });
+    } catch (_) { toast("Photo illisible, ignorée", "err"); }
+  }
+  renderPhotoPreview();
+}
+function onRemovePhoto(i) {
+  const p = state.formPhotos[i];
+  if (p) URL.revokeObjectURL(p.url);
+  state.formPhotos.splice(i, 1);
+  renderPhotoPreview();
+}
+function clearFormPhotos() {
+  state.formPhotos.forEach((p) => URL.revokeObjectURL(p.url));
+  state.formPhotos = [];
+}
+async function uploadPhotos() {
+  const urls = [];
+  for (const p of state.formPhotos) {
+    const path = `${genToken()}.jpg`;
+    const { error } = await sb.storage.from("photos").upload(path, p.blob, { contentType: "image/jpeg" });
+    if (error) throw new Error("photo : " + error.message);
+    const { data } = sb.storage.from("photos").getPublicUrl(path);
+    urls.push(data.publicUrl);
+  }
+  return urls;
+}
+
 async function fetchAnnonces() {
   try {
     const { data, error } = await sb.from("annonces").select("*").order("created_at", { ascending: false });
@@ -417,8 +485,11 @@ function cardHTML(a) {
   const matchHTML = score != null
     ? `<div class="match"><span>Match ${score}%</span><div class="match-bar"><div class="match-fill" style="width:${score}%"></div></div></div>`
     : "";
+  const photo = a.photos && a.photos[0]
+    ? `<div class="card-photo"><img src="${esc(a.photos[0])}" alt="" loading="lazy" /></div>` : "";
   return `
   <div class="card" data-id="${a.id}">
+    ${photo}
     <div class="card-top">
       <span class="card-type">${t.icon} ${esc(t.label)}</span>
       <div class="badges">${badgesFor(a)}</div>
@@ -531,6 +602,7 @@ function viewDetail() {
       <div class="badges" style="margin-bottom:10px">${badgesFor(a)}</div>
       <h1>${esc(cardTitle(a))}</h1>
       <p class="subtitle">${esc(t.label)} — ${esc(a.zone || "")}</p>
+      ${a.photos && a.photos.length ? `<div class="gallery">${a.photos.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" alt="Photo de l'annonce" loading="lazy" /></a>`).join("")}</div>` : ""}
       <dl class="dl">${rows.join("")}</dl>
       ${a.conditions ? `<hr class="divider"/><h2>Conditions & exigences</h2><p>${esc(a.conditions)}</p>` : ""}
       <hr class="divider"/>
@@ -644,6 +716,14 @@ function viewPublier() {
       <div class="field"><label>Expérience min. (années)</label><input name="expMin" type="number" min="0" /></div>
       <div class="field check-inline"><input type="checkbox" name="tpObligatoire" /><label>TP (Titre Pro) obligatoire</label></div>
       <div class="field check-inline"><input type="checkbox" name="cbObligatoire" /><label>Lecture carte bleue exigée</label></div>` : ""}
+      ${(def.vehicule || def.accessoire || def.vente) ? `
+      <hr class="divider full" />
+      <div class="field full">
+        <label>Photos (${PHOTO_MAX} max — optionnel)</label>
+        <input type="file" id="photo-input" accept="image/*" multiple />
+        <div class="hint">📸 Une photo augmente fortement les contacts. Elles sont <b>publiques</b> et compressées automatiquement.<br/>⚠️ <b>Floute ou masque la plaque d'immatriculation</b>, et ne photographie aucun visage (RGPD).</div>
+        <div class="photo-preview" id="photo-preview"></div>
+      </div>` : ""}
       <div class="field full"><label>Conditions & documents</label><textarea name="conditions" placeholder="Caution, documents à jour, carte pro, état du véhicule…"></textarea><div class="hint">Pas de liens externes ni de contenu hors usage professionnel.</div></div>
       <div class="full error-text" id="form-error"></div>
       <div class="form-actions full">
@@ -857,6 +937,16 @@ function bindViewEvents() {
   if (authf) authf.addEventListener("submit", onSubmitAuth);
   const logoutBtn = document.getElementById("logout-btn");
   if (logoutBtn) logoutBtn.addEventListener("click", onLogout);
+  const photoInput = document.getElementById("photo-input");
+  if (photoInput) photoInput.addEventListener("change", onPickPhotos);
+  const photoPrev = document.getElementById("photo-preview");
+  if (photoPrev) {
+    photoPrev.addEventListener("click", (ev) => {
+      const b = ev.target.closest("[data-photo-del]");
+      if (b) onRemovePhoto(Number(b.dataset.photoDel));
+    });
+    renderPhotoPreview(); // restaure les vignettes après un re-rendu du formulaire
+  }
   const newpwdForm = document.getElementById("newpwd-form");
   if (newpwdForm) newpwdForm.addEventListener("submit", onSetNewPassword);
   const licenceSend = document.getElementById("licence-send");
@@ -941,6 +1031,11 @@ async function onSubmitAnnonce(e) {
 
   if (btn) { btn.disabled = true; btn.textContent = "Publication…"; }
   try {
+    if (state.formPhotos.length) {
+      if (btn) btn.textContent = "Envoi des photos…";
+      data.photos = await uploadPhotos();
+      if (btn) btn.textContent = "Publication…";
+    }
     const { data: rows, error } = await sb.from("annonces").insert(toDb(data)).select();
     if (error) throw error;
     const created = fromDb(rows[0]);
@@ -954,6 +1049,7 @@ async function onSubmitAnnonce(e) {
     }
     if (!state.annonces.find((x) => x.id === created.id)) state.annonces.unshift(created);
     saveCache();
+    clearFormPhotos();
     toast("Annonce publiée ✓ — visible par tous", "ok");
     setView("espace");
   } catch (err) {
